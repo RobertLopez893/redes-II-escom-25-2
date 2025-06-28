@@ -12,8 +12,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class WebClient {
 
     private static final String USER_AGENT = "Mozilla/5.0";
-    private static final Pattern LINK_PATTERN = Pattern.compile("href=\"(.*?)\"", Pattern.CASE_INSENSITIVE);
-    private static final Pattern SRC_PATTERN = Pattern.compile("src=\"(.*?)\"", Pattern.CASE_INSENSITIVE);
+    private static final Pattern LINK_PATTERN = Pattern.compile("href\\s*=\\s*[\"']?(.*?)[\"'>\\s]", Pattern.CASE_INSENSITIVE);
+    private static final Pattern SRC_PATTERN = Pattern.compile("src\\s*=\\s*[\"']?(.*?)[\"'>\\s]", Pattern.CASE_INSENSITIVE);
     private static ExecutorService threadPool;
     private static final Queue<String> urlQueue = new ConcurrentLinkedQueue<>();
     private static final Set<String> downloadedUrls = ConcurrentHashMap.newKeySet();
@@ -199,6 +199,8 @@ public class WebClient {
         }
     }
 
+    private static final Pattern CSS_URL_PATTERN = Pattern.compile("url\\(['\"]?(.*?)['\"]?\\)", Pattern.CASE_INSENSITIVE);
+
     private static void processLinks(String htmlContent, String baseUrl, int currentDepth) {
         Matcher hrefMatcher = LINK_PATTERN.matcher(htmlContent);
         while (hrefMatcher.find()) {
@@ -209,6 +211,12 @@ public class WebClient {
         Matcher srcMatcher = SRC_PATTERN.matcher(htmlContent);
         while (srcMatcher.find()) {
             String link = srcMatcher.group(1);
+            processFoundLink(link, baseUrl, currentDepth);
+        }
+
+        Matcher cssUrlMatcher = CSS_URL_PATTERN.matcher(htmlContent);
+        while (cssUrlMatcher.find()) {
+            String link = cssUrlMatcher.group(1);
             processFoundLink(link, baseUrl, currentDepth);
         }
     }
@@ -282,22 +290,31 @@ public class WebClient {
         return sb.toString();
     }
 
-    private static String convertToLocalLink(String originalLink, String baseUrl, String localBasePath) throws MalformedURLException {
+    private static String convertToLocalLink(String originalLink, String baseUrl, String currentFilePath) throws MalformedURLException {
         if (originalLink.startsWith("javascript:") || originalLink.startsWith("mailto:") || originalLink.startsWith("#")) {
             return originalLink;
         }
 
-        URL resolvedUrl;
-        if (originalLink.startsWith("http://") || originalLink.startsWith("https://")) {
-            resolvedUrl = new URL(originalLink);
-            if (resolvedUrl.getHost().equals(new URL(baseUrl).getHost())) {
-                return handleLocalPath(resolvedUrl.getPath(), localBasePath);
-            }
-            return originalLink;
+        URL resolvedUrl = new URL(new URL(baseUrl), originalLink);
+        String targetPath = resolvedUrl.getPath().split("\\?")[0].split("#")[0];
+
+        // Asegurar que termina en .html si es necesario
+        if (targetPath.endsWith("/")) {
+            targetPath += "index.html";
+        } else if (!targetPath.contains(".")) {
+            targetPath += ".html";
         }
 
-        resolvedUrl = new URL(new URL(baseUrl), originalLink);
-        return handleLocalPath(resolvedUrl.getPath(), localBasePath);
+        // Obtener la ruta local absoluta al recurso destino
+        Path destinationPath = Paths.get(outputDir, siteFolderName, targetPath).normalize();
+
+        // Ruta del archivo HTML actual
+        Path sourcePath = Paths.get(currentFilePath).getParent();
+
+        // Calcular ruta relativa entre ambos
+        Path relativePath = sourcePath.relativize(destinationPath);
+
+        return relativePath.toString().replace("\\", "/"); // Normalizar para navegadores
     }
 
     private static String handleLocalPath(String path, String localBasePath) {
@@ -306,9 +323,9 @@ public class WebClient {
         if (path.endsWith("/")) {
             path += "index.html";
         } else if (!path.contains(".")) {
-            path += "/index.html";
+            path += ".html";  // no assumes it's a directory, treat it as a file
         }
 
-        return siteFolderName + path;
+        return path.startsWith("/") ? path.substring(1) : path;
     }
 }
